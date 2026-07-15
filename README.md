@@ -215,17 +215,28 @@ tailwindcss-oxide.wasi-browser.js  → getDefaultContext, initial: 16384, asyncW
 메인 워커에서 끝내고(`collectProjectFiles`, `collectStylesheets`) 내용만
 postMessage 로 넘기므로 Tailwind 워커는 memfs 도 fs 도 모른다. 그런데도 멈춘다.
 
-관찰:
-- Tailwind 워커의 `onerror` 는 **안 걸린다** → 워커 로드는 성공
-- 응답이 영영 안 온다 → 워커 **내부**에서 블록
-- 같은 코드가 격리 프로브(메인 워커에 rolldown 없음)에서는 4,884바이트 반환
+진단으로 좁힌 것 (부트 핑을 심어서):
 
-즉 realm 분리만으로는 부족하다. Tailwind 워커가 **rolldown 이 올라간 워커의
-자식**이라는 사실 자체가 영향을 주는 것으로 보인다 (SAB 공유? 중첩 워커 2단?).
-다음에 확인할 것:
-- Tailwind 워커를 **메인 스레드에서** 띄우고 Vite 워커와 형제로 두기
+```
+워커진행: ["module-eval-start", "imports-done"]     ← 'req 수신' 이 없다
+```
+
+- Tailwind 워커의 **모듈은 정상 평가되고 oxide wasm 도 인스턴스화된다**
+  (부모 워커에 rolldown 이 올라가 있어도!). 즉 emnapi 컨텍스트 충돌은
+  **로드 시점의 문제가 아니다.**
+- `onerror` 는 안 걸린다 → 로드 실패도 아니다
+- 그런데 `self.onmessage` 가 안 불린다
+
+**가설 1 (기각)**: 톱레벨 await 메시지 유실. oxide 의 wasi 엔트리가 톱레벨 await 를
+쓰므로 `self.onmessage = ...` 가 그 뒤에 실행되어 그 사이 메시지가 유실된다고 봤다.
+리스너를 먼저 걸고 큐에 담도록 고쳤지만(현재 코드) **여전히 멈춘다.**
+
+**남은 가설**:
+- Tailwind 워커가 rolldown 워커의 **자식**(중첩 2단)이라는 것 자체가 문제
+  → 메인 스레드에서 형제로 띄우고 MessagePort 로 연결해볼 것
 - oxide 의 `asyncWorkPoolSize` 를 0/1 로 낮춰보기
-- rolldown 을 로드하기 **전에** oxide 를 먼저 초기화해보기 (등록 순서)
+- 격리 프로브(4,884바이트 성공)와 지금의 차이를 더 좁히기 —
+  프로브는 `plugin.transform()` 을 직접 불렀고 Vite 서버가 없었다
 
 ### `@tailwindcss/node` 는 버그라서 뺀 게 아니라 **Node 어댑터**라서 뺐다
 

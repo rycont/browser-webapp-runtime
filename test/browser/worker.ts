@@ -66,7 +66,7 @@ const t = async (name: string, fn: () => unknown): Promise<void> => {
   try {
     // 개별 타임박스 — 하나가 멈춰도 나머지 결과는 받는다
     const timeout = new Promise((_, rej) =>
-      setTimeout(() => rej(new Error('120초 타임아웃 — 여기서 멈춤')), 120_000))
+      setTimeout(() => rej(new Error('25초 타임아웃 — 여기서 멈춤')), 25_000))
     results.push({ name, ok: true, detail: String(await Promise.race([fn(), timeout])).slice(0, 120) })
     ;(self as unknown as Worker).postMessage([...results, { name: `>>> 다음: ?`, ok: true, detail: '진행중' }])
   } catch (e) {

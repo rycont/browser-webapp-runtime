@@ -12,7 +12,7 @@
         document.getElementById('o').textContent = JSON.stringify(e.data, null, 1)
       }
       // 45초 뒤에도 안 끝났으면 부분 결과로 확정
-      setTimeout(() => { window.__done = window.__partial }, 45000)
+      setTimeout(() => { window.__done = window.__partial }, 70000)
       w.onerror = (e) => {
         window.__done = [{
           name: 'WORKER ERROR (최상위)',
