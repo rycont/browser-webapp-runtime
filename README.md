@@ -4,8 +4,8 @@ Vite 8 툴체인을 **브라우저 워커 안에서** 돌린다. React / Tailwin
 서버 없이 브라우저에서 개발·실행하는 것이 목표.
 
 > **상태: 실험 중.** Vite 8 이 브라우저 워커에서 부팅되고 `.tsx` 의 타입을 벗기는
-> 것까지 실측으로 확인했다. 남은 블로커는 rolldown 과 Tailwind 의 wasm 이 같은
-> emnapi 컨텍스트를 공유해서 충돌하는 것 하나다. 아래 "검증 현황" 참고.
+> 것까지 실측으로 확인했다. 남은 블로커는 Tailwind 를 같이 올렸을 때 멈추는 것
+> 하나이며 아직 원인 미상이다. 아래 "검증 현황" 참고.
 
 ## 왜 이게 가능해졌나
 
@@ -41,7 +41,7 @@ Chrome 149 / 워커 / COOP·COEP 적용 상태에서 실측:
 | **`transformRequest('/src/main.tsx')`** | ✅ **`export const hello: string = "world"` → `export const hello = "world";`** |
 | 플레인 CSS `transformRequest` | ✅ Vite CSS 파이프라인 정상 |
 | Tailwind 플러그인 단독 (rolldown 없이) | ✅ 4,884바이트 CSS, `.flex`/`.bg-sky-500`/`.p-4` 생성 |
-| Tailwind + rolldown 같은 워커 | ❌ **멈춤 — 현재 블로커 (emnapi 컨텍스트 충돌)** |
+| Tailwind + rolldown 같이 | ❌ **멈춤 — 현재 블로커, 원인 미상** |
 | React 앱 / iframe 서빙 | ⬜ 미착수 |
 
 ## 알아낸 것들
@@ -189,7 +189,7 @@ scanFiles() 반환: 8개 — bg-sky-500,class,flex,hi,items-center,p-4,rounded-l
 추출만 wasm 에 맡긴 뒤 `tailwindcss` 의 `compile().build(candidates)` 로 CSS 를 만든다.
 `@tailwindcss/vite` 와 `@tailwindcss/node` 를 통째로 대체한다.
 
-### napi-rs wasi 모듈 두 개를 한 realm 에 올릴 수 없다 ← **현재 블로커**
+### rolldown + Tailwind 공존 시 멈춤 ← **현재 블로커 (원인 미상)**
 
 `@rolldown/browser` 와 `@tailwindcss/oxide-wasm32-wasi` 는 **둘 다 같은 emnapi
 전역 컨텍스트에 등록**하고 각자 1 GiB / 워커 4개를 잡는다:
@@ -208,6 +208,11 @@ tailwindcss-oxide.wasi-browser.js  → getDefaultContext, initial: 16384, asyncW
 | 플레인 CSS (Tailwind 미개입) | ✅ Vite CSS 파이프라인 자체는 멀쩡 |
 
 즉 Tailwind 의 문제도, Vite CSS 의 문제도 아니고 **두 wasm 모듈의 공존** 문제다.
+
+⚠️ 다만 "emnapi 컨텍스트 충돌" 은 **아직 가설이다.** 부트 핑으로 확인한 결과
+Tailwind 워커의 모듈은 rolldown 이 부모에 있어도 정상 평가되고 oxide wasm 도
+인스턴스화된다. 즉 **로드 시점의 충돌은 아니다.** 위 표의 사실만 확정이고
+메커니즘은 미상이다.
 
 **시도한 것 — 별도 워커 분리 (아직 안 통함)**
 
