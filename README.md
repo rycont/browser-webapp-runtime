@@ -133,28 +133,36 @@ performance.measureUserAgentSpecificMemory():
 
 데스크톱에서는 문제없지만 **모바일에서는 이 숫자로는 어렵다.**
 
-#### `initial` 을 낮춰도 소용없다 (실측 확인)
+#### wasm 메모리 스윕 — iOS 가 막히는 진짜 이유
 
-`rolldown-binding.wasi-browser.js` 는 tarball 안의 평범한 JS 라서 패치할 수 있다
-(`src/patch-rolldown-wasm.ts`). 1 GiB 예약이 범인일 거라 보고 스윕해봤다:
+`rolldown-binding.wasi-browser.js` 는 tarball 안의 평범한 JS 라 패치할 수 있다
+(`src/patch-rolldown-wasm.ts`). 유효한 조합만 스윕한 결과:
 
-| 설정 | RSS | PSS | 앱 동작 |
+| initial | maximum | 결과 | PSS |
 | --- | --- | --- | --- |
-| 원본 (`initial: 16384` = 1 GiB, `asyncWorkPoolSize: 4`) | +625 MB | +418 MB | ✅ |
-| `initial: 256` (16 MiB), pool 4 | +610 MB | +403 MB | ✅ |
-| `initial: 256` (16 MiB), pool 0 | +641 MB | +423 MB | ✅ |
+| 1 GiB (16384) | 4 GiB (65536) — **원본** | ✅ 정상 | +425 MB |
+| 1 GiB | 2 GiB (32768) | ✅ 정상 | +437 MB |
+| 1 GiB | 1 GiB (16384) | ❌ 실패 | — |
+| 16 MiB (256) | 256 MiB / 1 GiB | ❌ `createServer` 실패 | — |
 
-**1 GiB → 16 MiB 로 낮췄는데 15 MB 밖에 안 줄었다.** 즉 641 MB 는 예약이 아니라
-**rolldown 이 실제로 만지는 메모리**다. 밖에서 손댈 수 있는 게 아니다.
+읽는 법:
 
-부수적으로 확인된 것 두 가지:
-- **emnapi 의 grow 경로는 멀쩡하다.** 16 MiB 에서 600 MB 까지 늘려가며 정상
-  동작하고 속도도 같다 (1.6초, transform 93ms). 이건 미지수였는데 풀렸다.
-- **`asyncWorkPoolSize: 0` 도 잘 된다.** emnapi 소스상 `<= 0` 이면
-  `singleThreadAsyncWork = true` 가 되어 워커 풀 없이 돈다. 다만 이득도 없다.
+- **rolldown 은 빌드 중 1 GiB 를 넘긴다.** maximum 을 1 GiB 로 조이면 죽고
+  2 GiB 면 산다. 즉 `maximum` 의 하한이 **2 GiB** 다.
+- **`initial` 은 못 낮춘다.** 16 MiB 로 두면 createServer 단계에서 죽는다.
+  napi-rs 가 크게 잡는 데는 이유가 있었다.
 
-모바일을 열려면 rolldown 자체가 가벼워지거나, esbuild-wasm(Go, 스레드 없음)
-기반의 Vite 6 으로 내려가는 수밖에 없어 보인다.
+그런데 **iOS Safari 는 `maximum` 이 2 GiB 면 초기화 단계에서 OOM 을 낸다**는 보고가
+있다 ([godotengine/godot#70621](https://github.com/godotengine/godot/issues/70621),
+Safari 16.2 기준. 256 MB 로 낮추면 해결). rolldown 의 하한(2 GiB)과 iOS 의
+상한(≈256 MB~1 GB)이 **겹치지 않는다.**
+
+→ **rolldown 기반 Vite 8 은 iOS Safari 에서 어려울 가능성이 높다.** 다만 이건
+아직 **추론이다** — iOS 를 직접 돌려본 적이 없고, 위 보고는 2022년 Safari 16.2
+기준이다. 최신 Safari 는 다를 수 있다. 확인하려면 실기기 테스트가 필요하다.
+
+모바일을 열어야 한다면 esbuild-wasm(Go, 스레드 없음) 기반 Vite 6 이 유일한
+대안으로 보인다 — SAB 요구도 같이 사라진다 (Tailwind 는 이미 순수 JS 다).
 
 ### (참고) Node/V8 에서의 메모리 거동
 

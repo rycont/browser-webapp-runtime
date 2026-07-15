@@ -47,8 +47,24 @@ export interface PatchRolldownWasmOptions {
    * `WebAssembly.Memory` 의 initial 페이지 수 (1페이지 = 64 KiB).
    * 원본은 16384 (= 1 GiB). 예: 256 → 16 MiB.
    * 생략하면 원본 그대로 둔다.
+   *
+   * ⚠️ 실측상 이걸 낮춰도 메모리는 거의 안 준다 (1 GiB → 16 MiB 에 RSS -15 MB).
+   * 641 MB 는 예약이 아니라 rolldown 이 실제로 만지는 양이다.
    */
   initialPages?: number
+  /**
+   * `WebAssembly.Memory` 의 maximum 페이지 수. 원본은 65536 (= 4 GiB = wasm32
+   * 주소공간 전체).
+   *
+   * **iOS Safari 는 `initial` 이 아니라 `maximum` 을 보고 초기화 단계에서 거부한다.**
+   * maximum 2048 MB 로 OOM 이 나고 256 MB 로 낮추면 해결된다는 보고가 있다
+   * (godotengine/godot#70621). 데스크톱에서는 주소공간 예약이라 사실상 공짜지만
+   * iOS 에서는 아니다.
+   *
+   * ⚠️ 낮추면 그 이상으로 grow 할 수 없다. rolldown 은 실측상 ~600 MB 를 쓰므로
+   * 너무 낮추면 빌드 중에 죽는다.
+   */
+  maximumPages?: number
   /**
    * emnapi async work 워커 수. 원본은 4.
    * **0 이하면 워커 풀 없이 메인 스레드에서 돈다.**
@@ -70,9 +86,16 @@ export interface PatchRolldownWasmPlugin {
  * `nodeShimAlias()` 가 이미 wasi 바인딩을 이 파일로 몰아주므로, 여기서 내용을
  * 가로채 숫자만 바꿔치기하면 된다.
  *
+ * ⚠️ **`worker.plugins` 에도 반드시 넣어야 한다.** Vite 의 워커 번들은 플러그인
+ * 파이프라인이 별도다. `plugins` 에만 넣으면 조용히 아무 일도 안 일어나고
+ * 원본 값이 그대로 번들된다 (이걸로 한참 헛돌았다 — 스윕 결과가 전부 같은
+ * 빌드를 재고 있었다).
+ *
  * ```ts
+ * const patch = () => patchRolldownWasm({ maximumPages: 4096 })
  * export default {
- *   plugins: [patchRolldownWasm({ initialPages: 256, asyncWorkPoolSize: 0 })],
+ *   plugins: [patch()],
+ *   worker: { plugins: () => [patch()] },   // ← 이게 없으면 무효
  * }
  * ```
  */
@@ -96,6 +119,17 @@ export function patchRolldownWasm(
         if (src === before) {
           throw new Error(
             'patchRolldownWasm: `initial: <숫자>` 를 찾지 못했습니다. ' +
+              '@rolldown/browser 의 부트스트랩 형태가 바뀐 것 같습니다.',
+          )
+        }
+      }
+
+      if (options.maximumPages != null) {
+        const before = src
+        src = src.replace(/maximum:\s*\d+/, `maximum: ${options.maximumPages}`)
+        if (src === before) {
+          throw new Error(
+            'patchRolldownWasm: `maximum: <숫자>` 를 찾지 못했습니다. ' +
               '@rolldown/browser 의 부트스트랩 형태가 바뀐 것 같습니다.',
           )
         }
