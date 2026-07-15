@@ -1,5 +1,7 @@
 # web-toolchain-in-browser
 
+[![JSR](https://jsr.io/badges/@rycont/web-toolchain-in-browser)](https://jsr.io/@rycont/web-toolchain-in-browser)
+
 Vite 8 툴체인을 **브라우저 워커 안에서** 돌린다. React / Tailwind / TypeScript 앱을
 서버 없이 브라우저에서 개발·실행하는 것이 목표.
 
