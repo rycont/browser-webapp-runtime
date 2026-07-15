@@ -3,9 +3,9 @@
 Vite 8 툴체인을 **브라우저 워커 안에서** 돌린다. React / Tailwind / TypeScript 앱을
 서버 없이 브라우저에서 개발·실행하는 것이 목표.
 
-> **상태: 실험 중.** Vite 8 이 브라우저 워커에서 부팅되고 `.tsx` 의 타입을 벗기는
-> 것까지 실측으로 확인했다. 남은 블로커는 Tailwind 를 같이 올렸을 때 멈추는 것
-> 하나이며 아직 원인 미상이다. 아래 "검증 현황" 참고.
+> **상태: 실험 중.** Vite 8 + Tailwind v4 가 브라우저 워커에서 동작한다 —
+> `.tsx` 타입 제거와 Tailwind CSS 생성까지 실측 확인. 남은 것은 React 앱을
+> iframe 에 서빙하는 것. 아래 "검증 현황" 참고.
 
 ## 왜 이게 가능해졌나
 
@@ -40,9 +40,10 @@ Chrome 149 / 워커 / COOP·COEP 적용 상태에서 실측:
 | `pluginContainer.resolveId` | ✅ `/src/main.tsx` → `/app/src/main.tsx` |
 | **`transformRequest('/src/main.tsx')`** | ✅ **`export const hello: string = "world"` → `export const hello = "world";`** |
 | 플레인 CSS `transformRequest` | ✅ Vite CSS 파이프라인 정상 |
-| Tailwind 플러그인 단독 (rolldown 없이) | ✅ 4,884바이트 CSS, `.flex`/`.bg-sky-500`/`.p-4` 생성 |
-| Tailwind + rolldown 같이 | ❌ **멈춤 — 현재 블로커, 원인 미상** |
+| **Tailwind v4 CSS 생성 (Vite 파이프라인 경유)** | ✅ **5,534바이트, `.flex`/`.bg-sky-500`/`.p-4` 생성** |
 | React 앱 / iframe 서빙 | ⬜ 미착수 |
+
+`npm run test:browser` 로 8/8 통과.
 
 ## 알아낸 것들
 
@@ -189,59 +190,53 @@ scanFiles() 반환: 8개 — bg-sky-500,class,flex,hi,items-center,p-4,rounded-l
 추출만 wasm 에 맡긴 뒤 `tailwindcss` 의 `compile().build(candidates)` 로 CSS 를 만든다.
 `@tailwindcss/vite` 와 `@tailwindcss/node` 를 통째로 대체한다.
 
-### rolldown + Tailwind 공존 시 멈춤 ← **현재 블로커 (원인 미상)**
+### oxide 를 버리면 Tailwind 가 순수 JS 로 돈다 ← **해결됨**
 
-`@rolldown/browser` 와 `@tailwindcss/oxide-wasm32-wasi` 는 **둘 다 같은 emnapi
-전역 컨텍스트에 등록**하고 각자 1 GiB / 워커 4개를 잡는다:
+`@tailwindcss/oxide-wasm32-wasi` 는 브라우저에서 못 쓴다:
 
-```
-rolldown-binding.wasi-browser.js   → getDefaultContext, initial: 16384, asyncWorkPoolSize: 4
-tailwindcss-oxide.wasi-browser.js  → getDefaultContext, initial: 16384, asyncWorkPoolSize: 4
-```
+- `scan()` 은 fs 를 걷느라 rayon 스레드를 띄우는데, 메인 스레드에서는
+  `Atomics.wait cannot be called in this context` 로 죽고, 워커에서는 데드락이다
+  (부모가 자식의 fs 요청에 답하겠다고 등록해놓고 곧바로 `Atomics.wait()` 으로
+  자기 이벤트루프를 멈춘다 — 요구사항이 상호배타적이다).
+- `scanFiles(contents)` 는 fs 를 안 건드려서 그 데드락은 피하지만, **oxide wasm 을
+  로드하는 것만으로 rolldown 과 충돌해 멈춘다** (원인 미상. 별도 워커로 분리해도
+  안 됐다. 모듈 평가와 wasm 인스턴스화까지는 정상인데 `self.onmessage` 가 안 불렸다).
 
-실측:
-
-| 구성 | 결과 |
-| --- | --- |
-| oxide 단독 (Vite 없음) | ✅ `scanFiles()` 정상, 플러그인이 4,884바이트 CSS 생성 |
-| oxide + rolldown 같은 워커 | ❌ 멈춤 |
-| 플레인 CSS (Tailwind 미개입) | ✅ Vite CSS 파이프라인 자체는 멀쩡 |
-
-즉 Tailwind 의 문제도, Vite CSS 의 문제도 아니고 **두 wasm 모듈의 공존** 문제다.
-
-⚠️ 다만 "emnapi 컨텍스트 충돌" 은 **아직 가설이다.** 부트 핑으로 확인한 결과
-Tailwind 워커의 모듈은 rolldown 이 부모에 있어도 정상 평가되고 oxide wasm 도
-인스턴스화된다. 즉 **로드 시점의 충돌은 아니다.** 위 표의 사실만 확정이고
-메커니즘은 미상이다.
-
-**시도한 것 — 별도 워커 분리 (아직 안 통함)**
-
-`src/tailwind-worker.ts` 로 Tailwind 를 별도 realm 에 분리했다. fs 접근은 전부
-메인 워커에서 끝내고(`collectProjectFiles`, `collectStylesheets`) 내용만
-postMessage 로 넘기므로 Tailwind 워커는 memfs 도 fs 도 모른다. 그런데도 멈춘다.
-
-진단으로 좁힌 것 (부트 핑을 심어서):
+**해법: oxide 를 아예 안 쓴다.** `compile().build(candidates)` 는 **모르는 후보를
+조용히 무시**하므로 **과추출이 안전하고 누락만 위험하다.** 정규식으로 게걸스럽게
+긁으면 된다. 실측:
 
 ```
-워커진행: ["module-eval-start", "imports-done"]     ← 'req 수신' 이 없다
+oxide 후보: 29개 → CSS 9,962 바이트
+JS   후보: 41개 → CSS 9,962 바이트     ← 과추출했는데 결과 동일
+두 CSS 가 동일한가? ✅ 완전히 같음 (바이트 단위)
 ```
 
-- Tailwind 워커의 **모듈은 정상 평가되고 oxide wasm 도 인스턴스화된다**
-  (부모 워커에 rolldown 이 올라가 있어도!). 즉 emnapi 컨텍스트 충돌은
-  **로드 시점의 문제가 아니다.**
-- `onerror` 는 안 걸린다 → 로드 실패도 아니다
-- 그런데 `self.onmessage` 가 안 불린다
+같이 사라진 것: 블로커, **Tailwind 쪽 SAB 요구**, wasm 1.7 MB.
+구현은 `src/extract-candidates.ts` — 30줄이다.
 
-**가설 1 (기각)**: 톱레벨 await 메시지 유실. oxide 의 wasi 엔트리가 톱레벨 await 를
-쓰므로 `self.onmessage = ...` 가 그 뒤에 실행되어 그 사이 메시지가 유실된다고 봤다.
-리스너를 먼저 걸고 큐에 담도록 고쳤지만(현재 코드) **여전히 멈춘다.**
+함정 하나: 처음엔 따옴표·`=`·꺾쇠를 문자 클래스에 넣었다가 `className="flex` 를
+한 토큰으로 삼켜서 `.flex` 를 통째로 놓쳤다. 따옴표는 **구분자**여야 한다.
+다만 arbitrary value 안에는 따옴표가 들어갈 수 있어서(`content-['hi']`)
+대괄호 패스를 따로 돌려 union 한다.
 
-**남은 가설**:
-- Tailwind 워커가 rolldown 워커의 **자식**(중첩 2단)이라는 것 자체가 문제
-  → 메인 스레드에서 형제로 띄우고 MessagePort 로 연결해볼 것
-- oxide 의 `asyncWorkPoolSize` 를 0/1 로 낮춰보기
-- 격리 프로브(4,884바이트 성공)와 지금의 차이를 더 좁히기 —
-  프로브는 `plugin.transform()` 을 직접 불렀고 Vite 서버가 없었다
+### `@tailwindcss/browser` 는 DOM 스캐너다 — 이 용도엔 안 맞는다
+
+```js
+querySelectorAll('[class]')                          // 렌더된 class 속성을 긁는다
+querySelectorAll('style[type="text/tailwindcss"]')   // 사용자 CSS 도 받아준다
+MutationObserver → document.head.append(<style>)
+wasm/oxide/Atomics/SharedArrayBuffer: 0건
+```
+
+파일 하나 272 KB, 의존성 0. **Tailwind 가 순수 JS 로 돈다는 증거**이긴 하다.
+하지만 소스가 아니라 **렌더된 DOM** 을 스캔하므로:
+
+- 아직 마운트 안 된 컴포넌트(조건부 렌더링/라우팅)의 클래스는 누락
+- 첫 페인트에 CSS 가 없어 깜빡임
+- 소스를 스캔하는 프로덕션 빌드와 **결과가 갈린다**
+
+프리뷰용으론 쓸 만하지만 "수정 없이 그대로 돌아간다" 가 목표면 함정이다.
 
 ### `@tailwindcss/node` 는 버그라서 뺀 게 아니라 **Node 어댑터**라서 뺐다
 

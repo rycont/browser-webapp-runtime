@@ -1,42 +1,49 @@
 /**
- * 브라우저 워커용 Tailwind v4 통합.
+ * 브라우저 워커용 Tailwind v4 통합. `@tailwindcss/vite` 를 대체한다.
  *
- * ## 두 가지 제약이 이 설계를 강제한다
+ * **oxide(wasm)를 쓰지 않는다.** 그래서 별도 워커도 필요 없고, SharedArrayBuffer 도
+ * 요구하지 않으며, rolldown 과 충돌하지도 않는다. 전부 순수 JS 다:
  *
- * ### 1. `Scanner.scan()` 은 브라우저에서 구조적으로 불가능하다
+ *   1. 프로젝트 파일 걷기 → memfs (동기라 공짜)
+ *   2. 후보 추출        → `./extract-candidates.ts` (정규식, oxide 와 출력 동일)
+ *   3. CSS 생성         → `tailwindcss` 의 `compile().build(candidates)` (순수 JS)
  *
- * fs 를 걷느라 rayon 스레드를 띄우는데, napi-rs 의 wasi-browser 템플릿 구조상
- * 두 컨텍스트 모두 막힌다:
+ * ## 왜 oxide 를 버렸나 — 브라우저에서 못 쓴다
+ *
+ * `Scanner.scan()` 은 fs 를 걷느라 rayon 스레드를 띄우는데, napi-rs 의
+ * wasi-browser 템플릿 구조상 두 컨텍스트 모두 막힌다:
  *
  *   - 메인 스레드: `RuntimeError: Atomics.wait cannot be called in this context`
  *   - 워커: **데드락**. 부모가
  *       `worker.addEventListener('message', __wasmCreateOnMessageForFsProxy(__fs))`
  *     로 "내 이벤트루프로 자식의 fs 요청에 답하겠다" 고 등록해놓고 곧바로
- *     `Atomics.wait()` 으로 그 이벤트루프를 멈춘다.
+ *     `Atomics.wait()` 으로 그 이벤트루프를 멈춘다. 요구사항이 상호배타적이다.
  *
- *   → 그래서 **fs 걷기는 우리가 JS 로** 하고(memfs 는 동기라 공짜다),
- *     wasm 에는 `scanFiles(contents)` 로 내용만 넘긴다.
+ * `scanFiles(contents)` 는 fs 를 안 건드려서 그 데드락은 피하지만, oxide wasm 을
+ * 로드하는 것만으로 rolldown 과 충돌해 멈춘다 (원인 미상, README 참고).
  *
- * ### 2. rolldown 과 oxide 는 한 realm 에 공존할 수 없다
+ * 그래서 oxide 를 **아예 안 쓴다.** `build(candidates)` 가 모르는 후보를 무시하므로
+ * 정규식 과추출로 충분하고, 실측상 oxide 와 **바이트 단위로 같은 CSS** 가 나온다.
+ * 덤으로 wasm 1.7 MB 와 Tailwind 쪽 SAB 요구가 같이 사라진다.
  *
- * 둘 다 `__emnapiGetDefaultContext()` 로 같은 emnapi 전역 컨텍스트에 등록하고
- * 각자 1 GiB / asyncWorkPoolSize:4 를 잡는다. 실측:
+ * ## `@tailwindcss/node` 를 안 쓰는 이유는 다르다
  *
- *     oxide 단독 (Vite 없음)     → ✅ 동작
- *     oxide + rolldown 같은 워커  → ❌ 멈춤
- *
- *   → 그래서 **Tailwind 를 별도 워커로 분리**한다 (`./tailwind-worker.ts`).
- *     realm 이 갈리면 emnapi 컨텍스트도 갈린다. Vite 의 transform 훅은 async 라
- *     postMessage 왕복이 자연스럽게 들어간다.
- *
- * 결과적으로 `@tailwindcss/vite` 와 `@tailwindcss/node` 를 둘 다 대체한다.
- * (후자는 버그라서가 아니라 **Node 어댑터**라서 — `registerHooks` 같은 Node ESM
- * 로더 훅을 쓰는데 브라우저엔 대응물이 없다. Tailwind 의 순수 JS 코어인
+ * 그건 버그가 아니라 **Node 어댑터**라서다 — `registerHooks`(Node ESM 로더 훅) 등
+ * 브라우저에 대응물이 없는 것들을 쓴다. Tailwind 의 순수 JS 코어인
  * `compile(css, { loadStylesheet, loadModule })` 이 곧 호스트를 꽂는 자리이고,
- * 우리는 거기에 memfs 를 꽂는다.)
+ * 이 파일은 거기에 memfs 를 꽂는다. 대체이지 우회가 아니다.
+ *
+ * ## `@tailwindcss/browser` 를 안 쓰는 이유
+ *
+ * 그건 **DOM 스캐너**다 (`querySelectorAll('[class]')` + MutationObserver 로
+ * 렌더된 class 속성을 긁어 `<style>` 을 head 에 꽂는다. wasm 은 0건).
+ * 렌더된 것만 보므로 아직 마운트 안 된 컴포넌트의 클래스가 누락되고, 첫 페인트에
+ * 깜빡임이 생기며, 소스를 스캔하는 프로덕션 빌드와 결과가 갈린다.
+ * 프리뷰용으론 쓸 만하지만 "수정 없이 그대로 돌아간다" 를 목표로 하면 함정이다.
  */
 import { fs } from 'memfs'
-import type { ScanInput, TailwindRequest, TailwindResponse } from './tailwind-worker.ts'
+import { compile } from 'tailwindcss'
+import { extractCandidatesFrom } from './extract-candidates.ts'
 
 const f = fs as unknown as {
   existsSync(p: string): boolean
@@ -54,9 +61,9 @@ const SCANNABLE = /\.(html?|jsx?|tsx?|mjs|cjs|vue|svelte|astro|md|mdx)$/
 /** 걷지 않을 디렉터리. */
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', '.vite'])
 
-/** 프로젝트를 JS 로 걷는다 — wasm 의 fs 걷기(=데드락)를 피하는 핵심. */
-function collectProjectFiles(root: string): ScanInput[] {
-  const out: ScanInput[] = []
+/** 프로젝트 소스를 memfs 에서 걷어 모은다. */
+function collectSources(root: string): string[] {
+  const out: string[] = []
   const walk = (dir: string): void => {
     let entries: Array<{ name: string; isDirectory(): boolean }>
     try {
@@ -72,10 +79,7 @@ function collectProjectFiles(root: string): ScanInput[] {
       }
       if (!SCANNABLE.test(e.name)) continue
       try {
-        out.push({
-          content: f.readFileSync(full, 'utf8'),
-          extension: e.name.slice(e.name.lastIndexOf('.') + 1),
-        })
+        out.push(f.readFileSync(full, 'utf8'))
       } catch {
         /* 읽기 실패는 무시 */
       }
@@ -85,14 +89,16 @@ function collectProjectFiles(root: string): ScanInput[] {
   return out
 }
 
-function resolveStylesheet(
+/** memfs 에서 `@import "..."` 를 해석한다. Tailwind 의 loadStylesheet 훅용. */
+async function loadStylesheetFromMemfs(
   id: string,
   base: string,
-): { path: string; base: string; content: string } | undefined {
+): Promise<{ path: string; base: string; content: string }> {
   const candidates: string[] = []
   if (id.startsWith('.') || id.startsWith('/')) {
     candidates.push(id.startsWith('/') ? id : `${base}/${id}`)
   } else {
+    // bare specifier — 프로젝트 node_modules 를 위로 훑는다
     let dir = base
     for (let i = 0; i < 20; i++) {
       candidates.push(`${dir}/node_modules/${id}`)
@@ -112,57 +118,12 @@ function resolveStylesheet(
       /* 다음 후보 */
     }
   }
-  return undefined
-}
-
-/**
- * `@import` 를 재귀적으로 미리 해석해서 Tailwind 워커에 통째로 넘긴다.
- * 워커에는 memfs 가 없으므로 (realm 이 다르다) 필요한 내용을 다 실어보내야 한다.
- */
-function collectStylesheets(
-  css: string,
-  base: string,
-): Record<string, { path: string; base: string; content: string }> {
-  const out: Record<string, { path: string; base: string; content: string }> = {}
-  const seen = new Set<string>()
-
-  const visit = (source: string, from: string): void => {
-    const re = /@import\s+["']([^"']+)["']/g
-    let m: RegExpExecArray | null
-    while ((m = re.exec(source)) !== null) {
-      const id = m[1].replace(/\s+(layer|source|theme)\(.*$/, '').trim()
-      const key = `${from} ${id}`
-      if (seen.has(key)) continue
-      seen.add(key)
-      const hit = resolveStylesheet(id, from)
-      if (!hit) continue
-      out[key] = hit
-      out[id] ??= hit
-      visit(hit.content, hit.base)
-    }
-  }
-  visit(css, base)
-  return out
+  throw new Error(`Tailwind: '${id}' 를 '${base}' 에서 찾을 수 없습니다 (memfs)`)
 }
 
 export interface TailwindBrowserOptions {
   /** 후보를 스캔할 프로젝트 루트. Vite 의 root 와 같게 둔다. */
   root: string
-  /**
-   * Tailwind 워커를 만드는 함수. 번들러가 워커 엔트리를 알아야 하므로
-   * 호출부에서 넘긴다:
-   *
-   * ```ts
-   * tailwindBrowser({
-   *   root: '/app',
-   *   createWorker: () => new Worker(
-   *     new URL('@rycont/browser-webapp-runtime/tailwind-worker', import.meta.url),
-   *     { type: 'module' },
-   *   ),
-   * })
-   * ```
-   */
-  createWorker: () => Worker
 }
 
 /** Vite 플러그인 최소 형태. vite 를 타입 의존성으로 끌어오지 않기 위해 직접 정의한다. */
@@ -173,36 +134,12 @@ export interface TailwindBrowserPlugin {
 
 /**
  * Tailwind v4 를 브라우저 워커 안 Vite 에 물린다. `@tailwindcss/vite` 대신 쓴다.
- * Tailwind 자체는 별도 워커에서 돈다 (위 주석의 emnapi 컨텍스트 충돌 참고).
+ *
+ * 사용자 앱은 손댈 필요가 없다 — 모듈 레지스트리에서 `@tailwindcss/vite` 를
+ * 이 함수로 바꿔치기하면 사용자의 `plugins: [tailwindcss()]` 가 그대로 동작한다.
  */
 export function tailwindBrowser(options: TailwindBrowserOptions): TailwindBrowserPlugin {
-  const { root, createWorker } = options
-
-  let worker: Worker | undefined
-  let seq = 0
-  const pending = new Map<number, (r: TailwindResponse) => void>()
-
-  const ensureWorker = (): Worker => {
-    if (worker) return worker
-    worker = createWorker()
-    worker.onmessage = (e: MessageEvent<TailwindResponse>) => {
-      pending.get(e.data.id)?.(e.data)
-      pending.delete(e.data.id)
-    }
-    // ⚠️ 반드시 필요하다 — 워커가 로드에 실패하면 응답이 영영 안 오고
-    // await 이 조용히 영원히 멈춘다 (타임아웃도 없이). 대기 중인 요청을 전부 깨운다.
-    worker.onerror = (e: ErrorEvent) => {
-      const msg = `Tailwind 워커 로드/실행 실패: ${e.message} @ ${e.filename}:${e.lineno}`
-      for (const [id, resolve] of pending) resolve({ id, error: msg })
-      pending.clear()
-    }
-    worker.onmessageerror = () => {
-      for (const [id, resolve] of pending) resolve({ id, error: 'Tailwind 워커: 메시지 직렬화 실패' })
-      pending.clear()
-    }
-    return worker
-  }
-
+  const { root } = options
   return {
     name: 'browser-webapp-runtime:tailwind',
     async transform(code: string, id: string) {
@@ -210,24 +147,14 @@ export function tailwindBrowser(options: TailwindBrowserOptions): TailwindBrowse
       if (!path.endsWith('.css')) return undefined
       if (!/@import\s+["']tailwindcss|@tailwind\s|@reference\s/.test(code)) return undefined
 
-      const base = dirname(path)
-      const req: TailwindRequest = {
-        id: ++seq,
-        css: code,
-        base,
+      const compiler = await compile(code, {
+        base: dirname(path),
         from: path,
-        // fs 접근은 전부 여기(메인 워커)서 끝낸다. Tailwind 워커는 fs 를 모른다.
-        files: collectProjectFiles(root),
-        stylesheets: collectStylesheets(code, base),
-      }
-
-      const res = await new Promise<TailwindResponse>((resolve) => {
-        pending.set(req.id, resolve)
-        ensureWorker().postMessage(req)
+        loadStylesheet: loadStylesheetFromMemfs,
       })
 
-      if (res.error) throw new Error(res.error)
-      return { code: res.css ?? '', map: null }
+      const candidates = extractCandidatesFrom(collectSources(root))
+      return { code: compiler.build(candidates), map: null }
     },
   }
 }

@@ -28,7 +28,7 @@ seedProject('/app', {
   // Tailwind v4 는 CSS 가 진입점이다. @import 하나로 엔진이 켜진다.
   'src/style.css': '@import "tailwindcss";\n',
   'src/plain.css': '.hello { color: red }\n',
-  // oxide 스캐너가 여기서 클래스를 주워야 한다
+  // 후보 추출기가 여기서 클래스를 주워야 한다
   'src/App.tsx':
     'export default () => <div className="flex items-center rounded-lg bg-sky-500 p-4 text-white">hi</div>\n',
   'package.json': JSON.stringify({ name: 'app', type: 'module' }),
@@ -116,11 +116,6 @@ await t('@rolldown/browser: 가상 모듈 번들', async () => {
   return o.output[0].code.replace(/\s+/g, ' ').slice(0, 70)
 })
 
-await t('@tailwindcss/oxide-wasm32-wasi: 로드', async () => {
-  const m = await import('@tailwindcss/oxide-wasm32-wasi')
-  return 'exports: ' + Object.keys(m).slice(0, 8).join(',')
-})
-
 await t('memfs 에 프로젝트가 실제로 있나', async () => {
   const { fs } = await import('memfs')
   const f = fs as unknown as {
@@ -141,18 +136,13 @@ let server: Awaited<ReturnType<typeof import('vite').createServer>> | undefined
 await t('vite: createServer({ middlewareMode }) + tailwind 플러그인', async () => {
   const { createServer } = await import('vite')
   const { tailwindBrowser } = await import('../../src/tailwind.ts')
-  // ⚠️ 서버는 워커당 **하나만** 만든다. 두 개를 만들면 rolldown wasm 인스턴스와
-  // wasi 스레드 풀이 둘이 되어 서로를 막는다(데드락).
+  // ⚠️ 서버는 워커당 **하나만** 만든다. 두 개면 rolldown wasm 인스턴스가 둘이 된다.
   server = await createServer({
     configFile: false,
     logLevel: 'silent',
     root: '/app',
-    plugins: [tailwindBrowser({
-      root: '/app',
-      // Tailwind 는 별도 워커에서 — rolldown 과 emnapi 컨텍스트가 충돌한다
-      createWorker: () =>
-        new Worker(new URL('../../src/tailwind-worker.ts', import.meta.url), { type: 'module' }),
-    })],
+    // oxide(wasm)를 안 쓰므로 별도 워커도 SAB 도 필요 없다
+    plugins: [tailwindBrowser({ root: '/app' })],
     server: { middlewareMode: true, hmr: false, ws: false, watch: null },
     optimizeDeps: { noDiscovery: true, include: [] },
   })
@@ -183,8 +173,8 @@ await t('vite: 플레인 CSS 를 transformRequest (Tailwind 없이)', async () =
   return r.code.replace(/\s+/g, ' ').slice(0, 90)
 })
 
-// @tailwindcss/vite 는 scan() 이 데드락이라 못 쓴다 (src/tailwind.ts 주석 참고).
-// 우리 통합으로 대체한다.
+// @tailwindcss/vite 는 oxide 의 scan() 이 브라우저에서 불가능해서 못 쓴다.
+// 우리 통합(순수 JS, wasm 0)으로 대체한다. src/tailwind.ts 주석 참고.
 await t('tailwind: 브라우저 워커에서 CSS 생성 (자체 통합)', async () => {
   if (!server) throw new Error('server 없음')
   const r = await server.transformRequest('/src/style.css')
