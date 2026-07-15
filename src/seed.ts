@@ -83,3 +83,20 @@ export function seedNodeModule(
 ): void {
   seedProject(`${root}/node_modules/${name}`, files)
 }
+
+/**
+ * `inlinePackages()` 로 구워둔 패키지들을 memfs 의 `node_modules` 에 통째로 심는다.
+ *
+ * ```ts
+ * import packages from 'virtual:inlined-packages'
+ * seedPackages('/app', packages)   // → /app/node_modules/react/... 등
+ * ```
+ */
+export function seedPackages(
+  root: string,
+  packages: Record<string, Record<string, string>>,
+): void {
+  for (const [name, files] of Object.entries(packages)) {
+    seedNodeModule(root, name, files)
+  }
+}

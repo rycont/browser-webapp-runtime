@@ -26,7 +26,8 @@
     "./shims/sha256": "./src/shims/sha256.ts",
     "./shims/napi-wasm-runtime-fs": "./src/shims/napi-wasm-runtime-fs.ts",
     "./shims/lightningcss": "./src/shims/lightningcss.ts",
-    "./extract-candidates": "./src/extract-candidates.ts"
+    "./extract-candidates": "./src/extract-candidates.ts",
+    "./inline-packages-plugin": "./src/inline-packages-plugin.ts"
   },
   "publish": {
     "include": [
