@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="ko">
   <body style="margin: 0; font: 13px/1.5 ui-monospace, monospace">
+    <pre id="env" style="padding: 8px; margin: 0; background: #f6f8fa"></pre>
     <pre id="o" style="padding: 8px; margin: 0">running…</pre>
     <!-- Vite dev server(워커)가 SW 를 통해 여기에 서빙한다 -->
     <iframe
@@ -10,6 +11,23 @@
 
     <script type="module">
       const out = document.getElementById('o')
+
+      // ── 실기기 진단 — 화면에 바로 띄운다 ───────────────────────────────
+      // crossOriginIsolated 가 false 면 SharedArrayBuffer 가 없고 rolldown 의 wasm 이
+      // 초기화 단계에서 죽는다. LAN 에서 http:// 로 열면 secure context 가 아니라서
+      // 여기가 false 가 된다 — HTTPS 로 열어야 한다 (test/browser/serve-lan.mjs).
+      const T_START = performance.now()
+      const env = document.getElementById('env')
+      const envLines = [
+        `crossOriginIsolated : ${globalThis.crossOriginIsolated}` +
+          (globalThis.crossOriginIsolated ? '' : '   ← false 면 여기서 끝. HTTPS 로 여세요'),
+        `SharedArrayBuffer   : ${typeof SharedArrayBuffer !== 'undefined'}`,
+        `Worker              : ${typeof Worker !== 'undefined'}`,
+        `hardwareConcurrency : ${navigator.hardwareConcurrency}`,
+        `deviceMemory        : ${navigator.deviceMemory ?? '(미지원)'} GB`,
+        `UA                  : ${navigator.userAgent}`,
+      ]
+      env.textContent = envLines.join('\n')
       const worker = new Worker(new URL('./worker.ts', import.meta.url), { type: 'module' })
 
       // 워커가 매 단계 중간 결과를 보낸다. 하드 블록이면 마지막 postMessage 이후로
@@ -68,7 +86,20 @@
       )
       await Promise.race([iframeLoaded, new Promise((r) => setTimeout(r, 60000))])
       console.log('[bridge] iframe load 이벤트 완료')
+      // ⚠️ __done 을 **먼저** 세운다. measureUserAgentSpecificMemory() 는 다음 GC 까지
+      // 기다리므로 수십 초가 걸릴 수 있고, 그 앞에 두면 테스트 러너가 그만큼 대기해서
+      // 렌더 시간이 62초로 보인다 (실제로 그렇게 잘못 쟀었다).
+      const elapsed = ((performance.now() - T_START) / 1000).toFixed(1)
+      env.textContent = envLines.join('\n') + `\n렌더까지          : ${elapsed}초`
       window.__done = window.__partial
+
+      // 힙 측정은 결과 확정 후에 느긋하게 — 화면 표시용
+      try {
+        if (performance.measureUserAgentSpecificMemory) {
+          const m = await performance.measureUserAgentSpecificMemory()
+          env.textContent += `\nJS/wasm 힙        : ${(m.bytes / 1048576).toFixed(0)} MB`
+        }
+      } catch {}
     </script>
   </body>
 </html>

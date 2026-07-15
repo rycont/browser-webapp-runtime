@@ -164,6 +164,32 @@ Safari 16.2 기준. 256 MB 로 낮추면 해결). rolldown 의 하한(2 GiB)과 
 모바일을 열어야 한다면 esbuild-wasm(Go, 스레드 없음) 기반 Vite 6 이 유일한
 대안으로 보인다 — SAB 요구도 같이 사라진다 (Tailwind 는 이미 순수 JS 다).
 
+#### 안드로이드는 다르다 — iOS 의 제약이 적용되지 않는다
+
+**삼성 인터넷 / 안드로이드 Chrome 은 Chromium(Blink + V8)** 이므로 위 wasm 메모리
+문제는 iOS(WebKit/JavaScriptCore) 만의 것이다. 기능도 전부 있다:
+
+- SharedArrayBuffer: **삼성 인터넷 15.0+** (Chromium 96 추종), COOP/COEP 필수
+  ([참고](https://www.testmuai.com/learning-hub/sharedarraybuffer-browser-support/))
+- WASM 스레드: 삼성 인터넷 11.1+
+
+남는 변수는 **기기 RAM** 뿐이다 (우리는 PSS 약 425 MB 를 쓴다).
+
+#### 실기기에서 직접 확인하기
+
+```bash
+npm run serve:lan
+```
+
+자체 서명 인증서로 LAN 에 HTTPS 서버를 띄우고 접속 주소를 출력한다.
+태블릿/폰에서 열면 화면 상단에 `crossOriginIsolated`, `deviceMemory`,
+렌더 시간, JS/wasm 힙이 뜬다.
+
+⚠️ **반드시 HTTPS 여야 한다.** COOP/COEP 로 crossOriginIsolated 를 켜려면
+secure context 가 필요한데 `http://192.168.x.x` 는 secure context 가 아니다.
+그러면 SharedArrayBuffer 가 없어서 rolldown 이 초기화 단계에서 죽는다.
+(localhost 는 예외라 개발 중엔 이 문제가 안 보인다.)
+
 ### (참고) Node/V8 에서의 메모리 거동
 
 `@rolldown/browser` 는 `new WebAssembly.Memory({ initial: 16384, maximum: 65536, shared: true })`

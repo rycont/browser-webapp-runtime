@@ -7,7 +7,8 @@
     "postinstall": "node scripts/setup-oxide-wasi.mjs",
     "setup": "node scripts/setup-oxide-wasi.mjs",
     "test:browser": "npm run setup && vite build -c test/browser/vite.config.ts && node test/browser/run.mjs",
-    "build:test": "npm run setup && vite build -c test/browser/vite.config.ts"
+    "build:test": "npm run setup && vite build -c test/browser/vite.config.ts",
+    "serve:lan": "npm run setup && vite build -c test/browser/vite.config.ts && node test/browser/serve-lan.mjs"
   },
   "devDependencies": {
     "@emnapi/core": "^1.11.1",
