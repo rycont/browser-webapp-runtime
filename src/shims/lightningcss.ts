@@ -36,12 +36,17 @@ import init, {
   transform,
   transformStyleAttribute,
 } from 'lightningcss-wasm'
-// .wasm 만은 exports 맵에 명시적으로 열려 있다
-import wasmUrl from 'lightningcss-wasm/lightningcss_node.wasm?url'
 
 // 톱레벨 await — 이 모듈을 import 하는 쪽은 여기가 끝날 때까지 블록된다.
 // 그래서 아래 re-export 들은 항상 "이미 init 된" 상태로 쓰인다.
-await init(wasmUrl)
+//
+// 인자를 안 준다: init 은 기본값으로
+//     new URL('lightningcss_node.wasm', import.meta.url)
+// 을 쓴다 (lightningcss-wasm/index.mjs 확인). 예전엔 `?url` 로 URL 을 넘겼는데,
+// 그건 **Vite 전용 문법**이라 JSR(Deno) 이 해석하지 못해 publish 가 막혔다:
+//     error: Package subpath './lightningcss_node.wasm?url' is not defined by "exports"
+// 기본값이 정확히 같은 일을 하므로 그냥 뺀다.
+await init()
 
 export {
   bundle,
