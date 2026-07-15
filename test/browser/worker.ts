@@ -5,12 +5,35 @@ import '../../src/shims/globals.ts'
 import { checkRuntimeSupport } from '../../src/mod.ts'
 import { seedPackages, seedProject, seedViteInstall } from '../../src/seed.ts'
 import { tailwindBrowser } from '../../src/tailwind.ts'
+import { type BridgeRequest, runMiddlewares } from '../../src/sw-bridge.ts'
 import { TODO_APP } from './todo-app.ts'
 import vitePkg from 'vite/package.json'
 import clientMjs from 'vite/dist/client/client.mjs?raw'
 import envMjs from 'vite/dist/client/env.mjs?raw'
 // 앱 트리 — 빌드 타임에 인라인해둔 react/react-dom/tailwindcss 등
 import inlinedPackages from 'virtual:inlined-packages'
+
+// ── 브리지 리스너를 **제일 먼저** 건다 ──────────────────────────────────
+// ⚠️ 이 파일은 아래에서 톱레벨 await 를 잔뜩 한다(테스트들). 리스너를 파일 끝에
+// 걸면 그 await 들이 도는 동안 도착한 메시지가 **핸들러가 없어서 유실**되고,
+// SW 는 응답을 영영 못 받아 iframe 이 빈 채로 남는다.
+// 그래서 먼저 큐에 담고, 서버가 준비되면 비운다.
+interface QueuedRequest {
+  request: BridgeRequest
+  port: MessagePort
+}
+const bridgeQueue: QueuedRequest[] = []
+let bridgeReady: ((q: QueuedRequest) => void) | undefined
+
+self.addEventListener('message', (e: MessageEvent) => {
+  const data = e.data as { type?: string; request?: BridgeRequest }
+  if (data?.type !== 'vite-request' || !data.request) return
+  const port = e.ports[0]
+  if (!port) return
+  const q = { request: data.request, port }
+  if (bridgeReady) bridgeReady(q)
+  else bridgeQueue.push(q)
+})
 
 // Vite 를 import 하기 **전에** memfs 를 채워야 한다.
 // vite/dist/node/chunks/node.js 의 src/node/constants.ts 영역이 모듈 최상단에서
@@ -106,5 +129,21 @@ await t('tailwind: Todo 앱의 클래스로 CSS 생성', async () => {
   }
   return `${r.code.length}바이트 | ${found.join(',')}`
 })
+
+// ── 브리지 준비 완료: 큐를 비우고 이후 요청을 바로 처리한다 ────────────────
+async function serve(q: QueuedRequest): Promise<void> {
+  if (!server) {
+    q.port.postMessage({ id: q.request.id, status: 503, headers: {}, body: 'server 미준비' })
+    return
+  }
+  const res = await runMiddlewares(
+    server.middlewares as unknown as Parameters<typeof runMiddlewares>[0],
+    q.request,
+  )
+  q.port.postMessage(res)
+}
+
+bridgeReady = (q) => void serve(q)
+for (const q of bridgeQueue.splice(0)) bridgeReady(q)
 
 ;(self as unknown as Worker).postMessage(results)

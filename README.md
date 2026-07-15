@@ -3,9 +3,9 @@
 Vite 8 툴체인을 **브라우저 워커 안에서** 돌린다. React / Tailwind / TypeScript 앱을
 서버 없이 브라우저에서 개발·실행하는 것이 목표.
 
-> **상태: 실험 중.** Vite 8 + Tailwind v4 가 브라우저 워커에서 동작한다 —
-> `.tsx` 타입 제거와 Tailwind CSS 생성까지 실측 확인. 남은 것은 React 앱을
-> iframe 에 서빙하는 것. 아래 "검증 현황" 참고.
+> **상태: 동작함.** 평범한 Vite + React + Tailwind + TypeScript Todo 앱이
+> **손댄 곳 하나 없이** 브라우저 안에서 빌드되고 iframe 에 서빙된다.
+> 서버는 없다. `npm run test:browser` 로 실제 Chrome 에서 검증한다.
 
 ## 왜 이게 가능해졌나
 
@@ -40,10 +40,15 @@ Chrome 149 / 워커 / COOP·COEP 적용 상태에서 실측:
 | `pluginContainer.resolveId` | ✅ `/src/main.tsx` → `/app/src/main.tsx` |
 | **`transformRequest('/src/main.tsx')`** | ✅ **`export const hello: string = "world"` → `export const hello = "world";`** |
 | 플레인 CSS `transformRequest` | ✅ Vite CSS 파이프라인 정상 |
-| **Tailwind v4 CSS 생성 (Vite 파이프라인 경유)** | ✅ **5,534바이트, `.flex`/`.bg-sky-500`/`.p-4` 생성** |
-| React 앱 / iframe 서빙 | ⬜ 미착수 |
+| **Tailwind v4 CSS 생성 (Vite 파이프라인 경유)** | ✅ 13,103바이트 — `min-h-screen`/`bg-slate-100`/`rounded-2xl`/`bg-sky-500`/`line-through`/`divide-y` |
+| App.tsx 변환 (TS + JSX) | ✅ JSX변환=true 타입제거=true |
+| main.tsx 의 react-dom 해석 | ✅ `__vite__cjsImport0_reactDom_client` — **optimizeDeps 가 브라우저에서 React(CJS)를 프리번들** |
+| **Todo 앱이 iframe 에 렌더 + Tailwind 스타일** | ✅ 버튼 배경 `oklch(0.685 0.169 237.323)` (= bg-sky-500), radius 8px |
+| **React 상호작용 (항목 추가)** | ✅ |
 
-`npm run test:browser` 로 8/8 통과.
+`npm run test:browser` 로 전부 통과 (`test/browser/screenshot.png` 참고).
+
+![Todo 앱](test/browser/screenshot.png)
 
 ## 알아낸 것들
 
